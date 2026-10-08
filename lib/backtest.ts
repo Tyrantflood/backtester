@@ -31,6 +31,14 @@ export function stopHitFirst(
   return direction === "long" ? lowFirst : !lowFirst;
 }
 
+/**
+ * Trading costs. Spread and slippage are percentages of price; commission is a fixed amount of
+ * account currency per order, charged when a trade is opened and again when it is closed.
+ */
+export type Costs = { spreadPct: number; slippagePct: number; commission: number };
+
+export const NO_COSTS: Costs = { spreadPct: 0, slippagePct: 0, commission: 0 };
+
 export type BacktestConfig = {
   strategy: Strategy;
   mode: TradeMode;
@@ -40,6 +48,8 @@ export type BacktestConfig = {
   takeProfitPct: number | null;
   /** Only matters when a single candle's range covers both levels. */
   sameCandle: SameCandleRule;
+  /** Omitted means no costs. */
+  costs?: Costs;
 };
 
 export type ExitReason = "signal" | "stop-loss" | "take-profit" | "liquidated" | "end-of-data";
@@ -50,10 +60,18 @@ export type Trade = {
   exitIndex: number;
   entryDate: string;
   exitDate: string;
+  /** Prices actually obtained: the market price moved against the trade by spread and slippage. */
   entryPrice: number;
   exitPrice: number;
-  /** Profit as a percent of the entry price; a short gains when the price falls. Floored at -100. */
+  /** The quoted market prices the fills were based on. */
+  marketEntryPrice: number;
+  marketExitPrice: number;
+  /** Net change in the account over the trade, costs included, as a percent. Cannot go below -100. */
   returnPct: number;
+  /** Net profit in account currency, costs included. */
+  pnl: number;
+  /** What spread, slippage and commission took from this trade; zero without costs. */
+  costs: number;
   exitReason: ExitReason;
   /** True when this candle touched both stop and target, so the exit order was an assumption. */
   ambiguous: boolean;
@@ -75,6 +93,8 @@ export type BacktestStats = {
   /** Largest peak-to-trough fall of the bar-by-bar equity curve. */
   maxDrawdownPct: number;
   buyAndHoldPct: number;
+  /** Total spread, slippage and commission paid over all trades. */
+  totalCosts: number;
 };
 
 export type EquityPoint = { date: string; value: number };
@@ -110,6 +130,15 @@ export function validateConfig(cfg: BacktestConfig): string | null {
     if (v !== null && !(v > 0)) return `${label} must be greater than 0 (or left empty to disable).`;
   }
   if (cfg.stopLossPct !== null && cfg.stopLossPct >= 100) return "Stop loss must be below 100%.";
+  const c = cfg.costs ?? NO_COSTS;
+  for (const [label, v] of [
+    ["Spread", c.spreadPct],
+    ["Slippage", c.slippagePct],
+    ["Commission", c.commission],
+  ] as const) {
+    if (!(Number.isFinite(v) && v >= 0)) return `${label} must be 0 or more.`;
+  }
+  if (c.spreadPct / 2 + c.slippagePct >= 100) return "Spread and slippage are too large: a fill would lose the whole price.";
   return null;
 }
 
@@ -157,31 +186,74 @@ function buildSignals(candles: Candle[], strategy: Strategy): Signals {
   return sig;
 }
 
-type Position = { dir: Direction; index: number; price: number };
+type Position = {
+  dir: Direction;
+  index: number;
+  /** The price actually obtained on entry (market price after spread and slippage). */
+  price: number;
+  /** The quoted market price the entry was based on. */
+  market: number;
+  /** Account value just before the entry, and what was left to invest after its commission. */
+  before: number;
+  capital: number;
+};
 
 const sign = (dir: Direction) => (dir === "long" ? 1 : -1);
 
-/**
- * What one unit of capital is worth when the position is marked at `price`. A short reaches zero at
- * double its entry price, but it is liquidated before then (see runBacktest), so this stays positive.
- */
+/** What one unit of capital is worth when the position is marked at `price`. */
 const worth = (p: Position, price: number) => (p.dir === "long" ? price / p.price : 2 - price / p.price);
+
+/**
+ * The market price at which covering a short leaves nothing, after the cover's spread, slippage
+ * and commission. Solving capital * (2 - cover / entryFill) - commission = 0, with the cover
+ * filled at price * (1 + edge), gives price = entryFill * (2 - commission / capital) / (1 + edge).
+ * With no costs that is exactly double the entry. An account with nothing to invest is already
+ * gone, so its level is the entry price itself.
+ */
+function liquidationPrice(p: Position, commission: number, edge: number): number {
+  return p.capital > 0 ? (p.price * (2 - commission / p.capital)) / (1 + edge) : p.market;
+}
 
 /**
  * One position at a time, all-in, long and/or short. Signals are read at a bar's close and
  * filled at the next bar's open, so no trade uses information from its own bar.
+ *
+ * Costs always work against the trade. Every fill moves the market price by the same adverse
+ * amount: buys (a long entry, a short cover) pay more, sells (a long exit, a short entry)
+ * receive less. Commission is taken from the account at each fill.
+ *
+ * Stops and targets are measured from the quoted entry price, not the fill. That keeps them
+ * independent of costs: with or without costs the same candle triggers the same exit, so costs
+ * only change what each trade earns, never which trades happen. The exit fill then pays costs.
+ * A short also has a liquidation level (see liquidationPrice) that can come before its stop.
  */
 export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestResult {
   const sig = buildSignals(candles, cfg.strategy);
+  const costs = cfg.costs ?? NO_COSTS;
+  const edge = (costs.spreadPct / 2 + costs.slippagePct) / 100; // adverse move per fill, as a fraction of price
   const trades: Trade[] = [];
   const equity: EquityPoint[] = [];
   const canGo = (d: Direction) => cfg.mode === "both" || cfg.mode === d;
 
-  let cash = INITIAL_CAPITAL; // account value while flat; the position is valued on top of it
+  let cash = INITIAL_CAPITAL; // account value while flat
   let pos: Position | null = null;
-  const close = (exitIndex: number, exitPrice: number, exitReason: ExitReason, ambiguous = false) => {
+
+  const openPosition = (dir: Direction, index: number, market: number): Position => ({
+    dir,
+    index,
+    market,
+    price: market * (1 + sign(dir) * edge),
+    before: cash,
+    capital: Math.max(0, cash - costs.commission),
+  });
+
+  const close = (exitIndex: number, market: number, exitReason: ExitReason, ambiguous = false) => {
     if (!pos) return;
-    const returnPct = Math.max(-100, sign(pos.dir) * (exitPrice / pos.price - 1) * 100);
+    const exitPrice = market * (1 - sign(pos.dir) * edge);
+    const after = Math.max(0, pos.capital * worth(pos, exitPrice) - costs.commission);
+    // The same trade with no costs at all, for measuring what the costs took.
+    const frictionless =
+      pos.dir === "long" ? pos.before * (market / pos.market) : Math.max(0, pos.before * (2 - market / pos.market));
     trades.push({
       direction: pos.dir,
       entryIndex: pos.index,
@@ -190,11 +262,16 @@ export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestRes
       exitDate: candles[exitIndex].date,
       entryPrice: pos.price,
       exitPrice,
-      returnPct,
+      marketEntryPrice: pos.market,
+      marketExitPrice: market,
+      // With nothing to trade (the account was wiped out earlier) there is no return to report.
+      returnPct: pos.before > 0 ? (after / pos.before - 1) * 100 : 0,
+      pnl: after - pos.before,
+      costs: frictionless - after,
       exitReason,
       ambiguous,
     });
-    cash *= 1 + returnPct / 100;
+    cash = after;
     pos = null;
   };
 
@@ -208,22 +285,21 @@ export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestRes
       if (!pos) {
         const dir: Direction | null =
           canGo("long") && sig.long.entry[i - 1] ? "long" : canGo("short") && sig.short.entry[i - 1] ? "short" : null;
-        if (dir) pos = { dir, index: i, price: c.open };
+        if (dir) pos = openPosition(dir, i, c.open);
       }
     }
 
     // Stops and targets are checked on the entry bar too, because the fill is at its open.
     if (pos) {
       const s = sign(pos.dir);
-      // A short with no stop is liquidated if the price doubles: the account is gone by then.
-      const stop =
-        cfg.stopLossPct !== null
-          ? pos.price * (1 - (s * cfg.stopLossPct) / 100)
-          : pos.dir === "short"
-            ? pos.price * 2
-            : null;
-      const target = cfg.takeProfitPct === null ? null : pos.price * (1 + (s * cfg.takeProfitPct) / 100);
-      const stopReason: ExitReason = cfg.stopLossPct === null ? "liquidated" : "stop-loss";
+      const statedStop = cfg.stopLossPct === null ? null : pos.market * (1 - (s * cfg.stopLossPct) / 100);
+      const target = cfg.takeProfitPct === null ? null : pos.market * (1 + (s * cfg.takeProfitPct) / 100);
+      // A short can lose more than its account, so the account's end is a stop of its own. It is
+      // the effective stop when no stop is set, or when the stated one lies beyond it.
+      const liquidation = pos.dir === "short" ? liquidationPrice(pos, costs.commission, edge) : null;
+      const liquidates = liquidation !== null && (statedStop === null || liquidation < statedStop);
+      const stop = liquidates ? liquidation : statedStop;
+      const stopReason: ExitReason = liquidates ? "liquidated" : "stop-loss";
 
       // A long's stop is hit by the low and its target by the high; a short's the other way round.
       const hitStop = stop !== null && (pos.dir === "long" ? c.low <= stop : c.high >= stop);
@@ -252,13 +328,15 @@ export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestRes
       }
     }
 
-    equity.push({ date: c.date, value: pos ? cash * worth(pos, c.close) : cash });
+    // Open positions are marked at the market close; exit costs are only charged when they close.
+    equity.push({ date: c.date, value: pos ? pos.capital * worth(pos, c.close) : cash });
   }
 
   if (pos) {
-    // Closes at the last close, which is exactly where the final equity point is already marked.
+    // Close at the last close, and make the final equity point the account after exit costs.
     const last = candles.length - 1;
     close(last, candles[last].close, "end-of-data");
+    equity[last].value = cash;
   }
 
   const first = candles[0]?.open;
@@ -295,5 +373,6 @@ export function computeStats(trades: Trade[], equity: EquityPoint[], benchmark: 
     avgLossPct: avgLoss,
     maxDrawdownPct: maxDd * 100,
     buyAndHoldPct: (heldEnd / INITIAL_CAPITAL - 1) * 100,
+    totalCosts: trades.reduce((a, t) => a + t.costs, 0),
   };
 }

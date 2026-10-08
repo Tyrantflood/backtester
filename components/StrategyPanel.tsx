@@ -44,11 +44,16 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
   const [stopLoss, setStopLoss] = useState("");
   const [takeProfit, setTakeProfit] = useState("");
   const [mode, setMode] = useState<TradeMode>("long");
+  const [spread, setSpread] = useState("");
+  const [slippage, setSlippage] = useState("");
+  const [commission, setCommission] = useState("");
   const [sameCandle, setSameCandle] = useState<SameCandleRule>("stop-first");
   const [error, setError] = useState<string | null>(null);
 
   // Empty means "disabled"; anything else must parse, which validateConfig then range-checks.
   const optional = (s: string) => (s.trim() === "" ? null : Number(s));
+  // Costs left empty are zero; anything unparseable stays NaN so validateConfig rejects it.
+  const cost = (s: string) => (s.trim() === "" ? 0 : Number(s));
 
   function run() {
     const cfg: BacktestConfig = {
@@ -60,6 +65,7 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
       takeProfitPct: optional(takeProfit),
       mode,
       sameCandle,
+      costs: { spreadPct: cost(spread), slippagePct: cost(slippage), commission: cost(commission) },
     };
     const problem = validateConfig(cfg) ?? (Object.values(cfg.strategy).some(Number.isNaN) ? "Enter a number in every field." : null);
     setError(problem);
@@ -120,6 +126,9 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
       <div className="flex flex-wrap items-end gap-4">
         <Field label="Stop loss %" value={stopLoss} onChange={setStopLoss} placeholder="off" />
         <Field label="Take profit %" value={takeProfit} onChange={setTakeProfit} placeholder="off" />
+        <Field label="Spread %" value={spread} onChange={setSpread} placeholder="0" />
+        <Field label="Slippage %" value={slippage} onChange={setSlippage} placeholder="0" />
+        <Field label="Commission $ / order" value={commission} onChange={setCommission} placeholder="0" />
         <label className="flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">
           If one candle hits both
           <select
@@ -145,7 +154,7 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
         {kind === "ma-cross"
           ? "Long: buys when the fast average crosses above the slow one and sells on the cross back down. Short: the mirror image, selling on the cross down and covering on the cross up."
           : "Long: buys when RSI falls through the oversold level and sells once it reaches overbought. Short: sells as RSI rises through overbought and covers once it drops to oversold."}{" "}
-        Both reverses on each signal. Stop loss and take profit are measured against the entry in the trade&apos;s direction. Fills at the next bar&apos;s open.
+        Both reverses on each signal. Spread (split half each way), slippage and commission are charged on every entry and exit, long or short, and always work against the trade. Stop loss and take profit are measured from the quoted entry price (below it for a long, above it for a short), so costs never move them; the exit then pays costs. A short with no stop, or a stop wider than its liquidation level, is closed as &quot;liquidated&quot; when the price reaches the point where covering would leave nothing. Fills at the next bar&apos;s open.
       </p>
 
       {error && (

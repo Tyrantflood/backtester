@@ -50,8 +50,12 @@ export default function BacktestResults({ result }: { result: BacktestResult }) 
         ))}
       </div>
       <p className="text-xs text-zinc-500">
-        Buy &amp; hold over the same period: {pct(stats.buyAndHoldPct)}. Equity starts at $10,000, all-in on every
-        trade, no fees or borrowing costs.
+        Buy &amp; hold over the same period: {pct(stats.buyAndHoldPct)}. Equity starts at $10,000 and goes all-in on
+        every trade.{" "}
+        {stats.totalCosts > 0
+          ? `Spread, slippage and commission cost $${stats.totalCosts.toLocaleString("en-US", { maximumFractionDigits: 2 })} (already in every figure above).`
+          : "No trading costs applied."}{" "}
+        No borrowing costs.
       </p>
 
       {trades.some((t) => t.ambiguous) && (
@@ -67,7 +71,7 @@ export default function BacktestResults({ result }: { result: BacktestResult }) 
           <table className="w-full text-right font-mono text-sm">
             <thead className="sticky top-0 bg-zinc-100 font-sans dark:bg-zinc-900">
               <tr>
-                {["#", "Side", "Entry", "Exit", "Entry price", "Exit price", "Return", "Bars", "Exit reason"].map((h) => (
+                {["#", "Side", "Entry", "Exit", "Entry price", "Exit price", "Return", ...(stats.totalCosts > 0 ? ["Costs"] : []), "Bars", "Exit reason"].map((h) => (
                   <th key={h} className="px-3 py-2 font-medium first:text-left last:text-left">
                     {h}
                   </th>
@@ -84,6 +88,7 @@ export default function BacktestResults({ result }: { result: BacktestResult }) 
                   <td className="px-3 py-1.5">{t.entryPrice.toFixed(2)}</td>
                   <td className="px-3 py-1.5">{t.exitPrice.toFixed(2)}</td>
                   <td className={`px-3 py-1.5 ${tone(t.returnPct)}`}>{pct(t.returnPct)}</td>
+                  {stats.totalCosts > 0 && <td className="px-3 py-1.5">${t.costs.toFixed(2)}</td>}
                   <td className="px-3 py-1.5">{t.exitIndex - t.entryIndex + 1}</td>
                   <td className="px-3 py-1.5 text-left font-sans">
                     {t.exitReason}

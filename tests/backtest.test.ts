@@ -322,7 +322,11 @@ describe("computeStats on hand-made trades", () => {
     exitDate: date(1),
     entryPrice: 100,
     exitPrice: 100 * (1 + returnPct / 100),
+    marketEntryPrice: 100,
+    marketExitPrice: 100 * (1 + returnPct / 100),
     returnPct,
+    pnl: returnPct * 100,
+    costs: 0,
     exitReason: "signal",
     ambiguous: false,
   });
