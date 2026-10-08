@@ -36,13 +36,33 @@ export type Trade = {
 export type BacktestStats = {
   trades: number;
   winRatePct: number;
-  totalReturnPct: number;
+  /** Compounded return of all closed trades; equals the final equity change. */
+  netReturnPct: number;
+  netProfit: number;
+  finalEquity: number;
+  /** Gross profit / gross loss over trade returns. Infinity with no losing trade, null with no trades. */
+  profitFactor: number | null;
+  /** Realised reward-to-risk: average winning trade / average losing trade. Null without both. */
+  avgRewardRisk: number | null;
+  avgWinPct: number | null;
+  avgLossPct: number | null;
+  /** Largest peak-to-trough fall of the bar-by-bar equity curve. */
   maxDrawdownPct: number;
-  avgTradePct: number;
   buyAndHoldPct: number;
 };
 
-export type BacktestResult = { trades: Trade[]; stats: BacktestStats };
+export type EquityPoint = { date: string; value: number };
+
+export type BacktestResult = {
+  trades: Trade[];
+  stats: BacktestStats;
+  /** Account value after each candle, marked to the close while a position is open. */
+  equity: EquityPoint[];
+  /** Same capital bought at the first open and held. */
+  benchmark: EquityPoint[];
+};
+
+export const INITIAL_CAPITAL = 10_000;
 
 /** Returns an error message, or null when the config is runnable. */
 export function validateConfig(cfg: BacktestConfig): string | null {
@@ -103,7 +123,9 @@ function buildSignals(candles: Candle[], strategy: Strategy): Signals {
 export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestResult {
   const { entry, exit } = buildSignals(candles, cfg.strategy);
   const trades: Trade[] = [];
+  const equity: EquityPoint[] = [];
 
+  let cash = INITIAL_CAPITAL; // account value while flat; the position is valued on top of it
   let open: { index: number; price: number } | null = null;
   const close = (exitIndex: number, exitPrice: number, exitReason: ExitReason, ambiguous = false) => {
     if (!open) return;
@@ -118,6 +140,7 @@ export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestRes
       exitReason,
       ambiguous,
     });
+    cash *= exitPrice / open.price;
     open = null;
   };
 
@@ -153,34 +176,49 @@ export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestRes
         else close(i, Math.max(c.open, target!), "take-profit", ambiguous);
       }
     }
+
+    equity.push({ date: c.date, value: open ? cash * (c.close / open.price) : cash });
   }
 
   if (open) {
+    // Closes at the last close, which is exactly where the final equity point is already marked.
     const last = candles.length - 1;
     close(last, candles[last].close, "end-of-data");
   }
 
-  return { trades, stats: computeStats(candles, trades) };
+  const first = candles[0]?.open;
+  const benchmark = candles.map((c) => ({ date: c.date, value: INITIAL_CAPITAL * (c.close / first) }));
+  return { trades, stats: computeStats(trades, equity, benchmark), equity, benchmark };
 }
 
-function computeStats(candles: Candle[], trades: Trade[]): BacktestStats {
-  let equity = 1;
-  let peak = 1;
+function computeStats(trades: Trade[], equity: EquityPoint[], benchmark: EquityPoint[]): BacktestStats {
+  let peak = INITIAL_CAPITAL;
   let maxDd = 0;
-  for (const t of trades) {
-    equity *= 1 + t.returnPct / 100;
-    peak = Math.max(peak, equity);
-    maxDd = Math.max(maxDd, (peak - equity) / peak);
+  for (const p of equity) {
+    peak = Math.max(peak, p.value);
+    maxDd = Math.max(maxDd, (peak - p.value) / peak);
   }
-  const wins = trades.filter((t) => t.returnPct > 0).length;
-  const first = candles[0]?.open;
-  const last = candles[candles.length - 1]?.close;
+
+  const wins = trades.filter((t) => t.returnPct > 0);
+  const losses = trades.filter((t) => t.returnPct < 0);
+  const sum = (ts: Trade[]) => ts.reduce((a, t) => a + t.returnPct, 0);
+  const avgWin = wins.length ? sum(wins) / wins.length : null;
+  const avgLoss = losses.length ? Math.abs(sum(losses)) / losses.length : null;
+  const grossLoss = Math.abs(sum(losses));
+
+  const finalEquity = equity.length ? equity[equity.length - 1].value : INITIAL_CAPITAL;
+  const heldEnd = benchmark.length ? benchmark[benchmark.length - 1].value : INITIAL_CAPITAL;
   return {
     trades: trades.length,
-    winRatePct: trades.length ? (wins / trades.length) * 100 : 0,
-    totalReturnPct: (equity - 1) * 100,
+    winRatePct: trades.length ? (wins.length / trades.length) * 100 : 0,
+    netReturnPct: (finalEquity / INITIAL_CAPITAL - 1) * 100,
+    netProfit: finalEquity - INITIAL_CAPITAL,
+    finalEquity,
+    profitFactor: trades.length === 0 ? null : grossLoss === 0 ? (wins.length ? Infinity : null) : sum(wins) / grossLoss,
+    avgRewardRisk: avgWin !== null && avgLoss !== null ? avgWin / avgLoss : null,
+    avgWinPct: avgWin,
+    avgLossPct: avgLoss,
     maxDrawdownPct: maxDd * 100,
-    avgTradePct: trades.length ? trades.reduce((a, t) => a + t.returnPct, 0) / trades.length : 0,
-    buyAndHoldPct: first && last ? (last / first - 1) * 100 : 0,
+    buyAndHoldPct: (heldEnd / INITIAL_CAPITAL - 1) * 100,
   };
 }

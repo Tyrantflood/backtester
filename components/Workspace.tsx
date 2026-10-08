@@ -4,6 +4,7 @@ import { useState } from "react";
 import BacktestResults from "@/components/BacktestResults";
 import CandleChart from "@/components/CandleChart";
 import CsvUpload from "@/components/CsvUpload";
+import EquityChart from "@/components/EquityChart";
 import ImageUpload from "@/components/ImageUpload";
 import StrategyPanel from "@/components/StrategyPanel";
 import { runBacktest, type BacktestResult } from "@/lib/backtest";
@@ -61,6 +62,7 @@ export default function Workspace() {
               Scroll to zoom, drag to pan, drag the axes to rescale.
             </p>
           </section>
+          {result && <EquityChart equity={result.equity} benchmark={result.benchmark} />}
           <StrategyPanel onRun={(cfg) => setResult(runBacktest(candles, cfg))} />
           {result && <BacktestResults result={result} />}
         </>
