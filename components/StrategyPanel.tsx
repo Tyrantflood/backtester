@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { parseCost, validateConfig, type BacktestConfig, type SameCandleRule, type TradeMode } from "@/lib/backtest";
+import { parseCost, parseOptional, validateConfig, type BacktestConfig, type SameCandleRule, type TradeMode } from "@/lib/backtest";
 
 type Kind = "ma-cross" | "rsi";
 
@@ -48,15 +48,19 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
   const [slippage, setSlippage] = useState("");
   const [commission, setCommission] = useState("");
   const [sameCandle, setSameCandle] = useState<SameCandleRule>("stop-first");
-  const [badCosts, setBadCosts] = useState({ spread: false, slippage: false, commission: false });
+  const [badInputs, setBadInputs] = useState({
+    stopLoss: false,
+    takeProfit: false,
+    spread: false,
+    slippage: false,
+    commission: false,
+  });
   const [error, setError] = useState<string | null>(null);
 
-  // Empty means "disabled"; anything else must parse, which validateConfig then range-checks.
-  const optional = (s: string) => (s.trim() === "" ? null : Number(s));
-  // A cost field holding unparseable text reads as "", so the input's badInput flag is tracked too.
-  const costField = (key: keyof typeof badCosts, set: (v: string) => void) => (v: string, bad: boolean) => {
+  // Unparseable text in a number input reads as "", so the input's badInput flag is tracked too.
+  const numField = (key: keyof typeof badInputs, set: (v: string) => void) => (v: string, bad: boolean) => {
     set(v);
-    setBadCosts((b) => ({ ...b, [key]: bad }));
+    setBadInputs((b) => ({ ...b, [key]: bad }));
   };
 
   function run() {
@@ -65,14 +69,14 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
         kind === "ma-cross"
           ? { type: "ma-cross", fast: Number(fast), slow: Number(slow) }
           : { type: "rsi", period: Number(period), oversold: Number(oversold), overbought: Number(overbought) },
-      stopLossPct: optional(stopLoss),
-      takeProfitPct: optional(takeProfit),
+      stopLossPct: parseOptional(stopLoss, badInputs.stopLoss),
+      takeProfitPct: parseOptional(takeProfit, badInputs.takeProfit),
       mode,
       sameCandle,
       costs: {
-        spreadPct: parseCost(spread, badCosts.spread),
-        slippagePct: parseCost(slippage, badCosts.slippage),
-        commission: parseCost(commission, badCosts.commission),
+        spreadPct: parseCost(spread, badInputs.spread),
+        slippagePct: parseCost(slippage, badInputs.slippage),
+        commission: parseCost(commission, badInputs.commission),
       },
     };
     const problem = validateConfig(cfg) ?? (Object.values(cfg.strategy).some(Number.isNaN) ? "Enter a number in every field." : null);
@@ -132,11 +136,11 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
       </div>
 
       <div className="flex flex-wrap items-end gap-4">
-        <Field label="Stop loss %" value={stopLoss} onChange={setStopLoss} placeholder="off" />
-        <Field label="Take profit %" value={takeProfit} onChange={setTakeProfit} placeholder="off" />
-        <Field label="Spread %" value={spread} onChange={costField("spread", setSpread)} placeholder="0" />
-        <Field label="Slippage %" value={slippage} onChange={costField("slippage", setSlippage)} placeholder="0" />
-        <Field label="Commission $ / order" value={commission} onChange={costField("commission", setCommission)} placeholder="0" />
+        <Field label="Stop loss %" value={stopLoss} onChange={numField("stopLoss", setStopLoss)} placeholder="off" />
+        <Field label="Take profit %" value={takeProfit} onChange={numField("takeProfit", setTakeProfit)} placeholder="off" />
+        <Field label="Spread %" value={spread} onChange={numField("spread", setSpread)} placeholder="0" />
+        <Field label="Slippage %" value={slippage} onChange={numField("slippage", setSlippage)} placeholder="0" />
+        <Field label="Commission $ / order" value={commission} onChange={numField("commission", setCommission)} placeholder="0" />
         <label className="flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">
           If one candle hits both
           <select

@@ -133,6 +133,15 @@ export function parseCost(raw: string, badInput = false): number {
   return raw.trim() === "" ? 0 : Number(raw);
 }
 
+/**
+ * Reads an optional field (stop loss, take profit): empty means disabled (null). As with
+ * parseCost, `badInput` text becomes NaN so validateConfig rejects it instead of disabling it.
+ */
+export function parseOptional(raw: string, badInput = false): number | null {
+  if (badInput) return NaN;
+  return raw.trim() === "" ? null : Number(raw);
+}
+
 /** Returns an error message, or null when the config is runnable. */
 export function validateConfig(cfg: BacktestConfig): string | null {
   const s = cfg.strategy;
@@ -150,7 +159,7 @@ export function validateConfig(cfg: BacktestConfig): string | null {
     ["Stop loss", cfg.stopLossPct],
     ["Take profit", cfg.takeProfitPct],
   ] as const) {
-    if (v !== null && !(v > 0)) return `${label} must be greater than 0 (or left empty to disable).`;
+    if (v !== null && !(v > 0)) return `${label} must be a number greater than 0 (or left empty to disable).`;
   }
   if (cfg.stopLossPct !== null && cfg.stopLossPct >= 100) return "Stop loss must be below 100%.";
   const c = cfg.costs ?? NO_COSTS;

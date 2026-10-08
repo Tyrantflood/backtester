@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   INITIAL_CAPITAL,
   parseCost,
+  parseOptional,
   runBacktest,
   validateConfig,
   type BacktestConfig,
@@ -598,6 +599,22 @@ describe("parseCost", () => {
     assert.ok(Number.isNaN(parseCost("abc")));
     const costs = { spreadPct: 0, slippagePct: parseCost("", true), commission: 0 };
     assert.match(validateConfig({ ...cfg(MA_1_2), costs }) ?? "", /Slippage must be a number/);
+  });
+});
+
+describe("parseOptional", () => {
+  it("reads empty as disabled and numbers as themselves", () => {
+    assert.equal(parseOptional(""), null);
+    assert.equal(parseOptional("  "), null);
+    assert.equal(parseOptional("5"), 5);
+  });
+  it("turns unparseable input into NaN that blocks the run, rather than disabling the stop or target", () => {
+    assert.ok(Number.isNaN(parseOptional("", true)));
+    assert.ok(Number.isNaN(parseOptional("abc")));
+    const problem = (stopLossPct: number | null, takeProfitPct: number | null) =>
+      validateConfig(cfg(MA_1_2, stopLossPct, takeProfitPct)) ?? "";
+    assert.match(problem(parseOptional("", true), null), /Stop loss must be a number/);
+    assert.match(problem(null, parseOptional("", true)), /Take profit must be a number/);
   });
 });
 
