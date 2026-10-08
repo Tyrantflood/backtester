@@ -207,6 +207,12 @@ const worth = (p: Position, price: number) => (p.dir === "long" ? price / p.pric
  * The market price at which covering a short leaves nothing, after the cover's spread, slippage
  * and commission. Solving capital * (2 - cover / entryFill) - commission = 0, with the cover
  * filled at price * (1 + edge), gives price = entryFill * (2 - commission / capital) / (1 + edge).
+ *
+ * `capital` is what was left to invest AFTER the entry commission (p.capital), not the account
+ * before it: with a $10,000 account and $100 commission it is 9,900, so the level for a short
+ * entered at 10 is 10 * (2 - 100 / 9900) = 19.89899, not 19.9. Covering at 19.9 would already
+ * leave the account $1 short.
+ *
  * With no costs that is exactly double the entry. An account with nothing to invest is already
  * gone, so its level is the entry price itself.
  */

@@ -351,13 +351,17 @@ describe("stops, targets and liquidation with costs", () => {
     assert.equal(shorts([bar], slip, null, null).trades[0].exitReason, "liquidated");
   });
 
-  it("commission lowers the level: $100 puts it at 10 * (2 - 100 / 9900) = 19.899, below the free 20", () => {
+  it("commission lowers the level: capital is the 9,900 left after the $100 entry fee (not the 10,000 account), so 10 * (2 - 100 / 9900) = 19.89899, not 19.9", () => {
     const bar: [number, number, number, number] = [10, 19.95, 9.5, 15];
     assert.equal(shorts([bar], {}, null, null).trades[0].exitReason, "end-of-data");
     const [t] = shorts([bar], { commission: 100 }, null, null).trades;
     assert.equal(t.exitReason, "liquidated");
     near(t.marketExitPrice, 19.89899, 1e-5);
     near(t.returnPct, -100, 1e-6);
+    // A high of 19.8995 is above 19.89899 but below 19.9: it must liquidate, which the 10,000-based level would miss.
+    assert.equal(shorts([[10, 19.8995, 9.5, 15]], { commission: 100 }, null, null).trades[0].exitReason, "liquidated");
+    // Covering at 19.9 would leave 9,900 * (2 - 1.99) - 100 = -1: already underwater.
+    near(9900 * (2 - 19.9 / 10) - 100, -1, 1e-9);
   });
 
   it("a stop set beyond the liquidation level cannot save the account: liquidation comes first", () => {
