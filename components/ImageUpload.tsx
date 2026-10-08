@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import CandleChart from "@/components/CandleChart";
+import { useDebounced } from "@/components/useDebounced";
 import {
   TIMEFRAMES,
   extractCandles,
@@ -24,6 +25,10 @@ type Picking = "bull" | "bear" | "top" | "bottom" | null;
 
 const INPUT = "rounded-md border border-zinc-300 bg-transparent px-2 py-1.5 text-sm dark:border-zinc-700";
 const LABEL = "flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400";
+
+// Empty means "not entered" (NaN for a price, null for a row, which then defaults to the image edge).
+const num = (s: string) => (s.trim() === "" ? NaN : Number(s));
+const row = (s: string) => (s.trim() === "" ? null : Number(s));
 
 const toHex = (r: number, g: number, b: number) =>
   `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
@@ -104,14 +109,23 @@ export default function ImageUpload({ onLoad }: { onLoad: (candles: Candle[]) =>
 
   const inputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const baseRef = useRef<HTMLCanvasElement | null>(null); // the decoded image, drawn once and copied from
+  const loadId = useRef(0); // lets a slow load that finishes late see it has been replaced
 
   async function handleFile(file: File) {
+    const id = ++loadId.current;
     setLoadError(null);
     setUsed(null);
-    if (file.type !== "image/png") return setLoadError("Please choose a PNG image.");
+    // Some systems report no type for a dropped file, so fall back to the extension in that case only.
+    const isPng = file.type === "image/png" || (file.type === "" && /\.png$/i.test(file.name));
+    if (!isPng) return setLoadError("Please choose a PNG image.");
     if (file.size > MAX_BYTES) return setLoadError("Image is larger than 20 MB.");
     try {
       const bitmap = await createImageBitmap(file);
+      if (id !== loadId.current) {
+        bitmap.close();
+        return;
+      }
       if (bitmap.width * bitmap.height > MAX_PIXELS) {
         bitmap.close();
         return setLoadError("Image is too large (over 25 megapixels).");
@@ -122,30 +136,37 @@ export default function ImageUpload({ onLoad }: { onLoad: (candles: Candle[]) =>
       const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
       ctx.drawImage(bitmap, 0, 0);
       bitmap.close();
+      baseRef.current = canvas;
       setImage(ctx.getImageData(0, 0, canvas.width, canvas.height));
       setFileName(file.name);
       setTopRow("");
       setBottomRow("");
     } catch {
-      setLoadError("Could not read that file as an image.");
+      if (id === loadId.current) setLoadError("Could not read that file as an image.");
     }
   }
 
-  const num = (s: string) => (s.trim() === "" ? NaN : Number(s));
-  const row = (s: string) => (s.trim() === "" ? null : Number(s));
+  // Reading a large image takes a noticeable moment, so wait for a slider drag or a burst of typing to
+  // settle (150 ms) instead of re-reading on every tick. `settling` is true while a change is waiting.
+  const settings = useMemo(
+    () => ({ bull, bear, tolerance, topPrice, bottomPrice, topRow, bottomRow }),
+    [bull, bear, tolerance, topPrice, bottomPrice, topRow, bottomRow],
+  );
+  const applied = useDebounced(settings, 150);
+  const settling = applied !== settings;
 
   const extraction = useMemo(() => {
     if (!image) return null;
     return extractCandles(image, {
-      bullColor: bull,
-      bearColor: bear,
-      tolerance,
-      topPrice: num(topPrice),
-      bottomPrice: num(bottomPrice),
-      topRow: row(topRow),
-      bottomRow: row(bottomRow),
+      bullColor: applied.bull,
+      bearColor: applied.bear,
+      tolerance: applied.tolerance,
+      topPrice: num(applied.topPrice),
+      bottomPrice: num(applied.bottomPrice),
+      topRow: row(applied.topRow),
+      bottomRow: row(applied.bottomRow),
     });
-  }, [image, bull, bear, tolerance, topPrice, bottomPrice, topRow, bottomRow]);
+  }, [image, applied]);
 
   const parsed = useMemo(
     () => (extraction?.ok ? ohlcToParseResult(extraction.ohlc, startDate, timeframe) : null),
@@ -156,11 +177,15 @@ export default function ImageUpload({ onLoad }: { onLoad: (candles: Candle[]) =>
   // Draw the original, with reference rows and detected candles on top.
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !image) return;
-    canvas.width = image.width;
-    canvas.height = image.height;
+    const base = baseRef.current;
+    if (!canvas || !base || !image) return;
+    // Assigning a size reallocates and clears the canvas, so only do it when the image changes.
+    if (canvas.width !== image.width || canvas.height !== image.height) {
+      canvas.width = image.width;
+      canvas.height = image.height;
+    }
     const ctx = canvas.getContext("2d")!;
-    ctx.putImageData(image as ImageData, 0, 0);
+    ctx.drawImage(base, 0, 0);
 
     const lw = Math.max(1, image.width / 800);
     ctx.lineWidth = lw;
@@ -407,7 +432,7 @@ export default function ImageUpload({ onLoad }: { onLoad: (candles: Candle[]) =>
           <div className="flex flex-wrap items-center gap-4">
             <button
               type="button"
-              disabled={!candles}
+              disabled={!candles || settling}
               onClick={() => {
                 if (!candles) return;
                 onLoad(candles);

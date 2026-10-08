@@ -1,13 +1,28 @@
+"use client";
+
+import { useState } from "react";
 import type { BacktestResult } from "@/lib/backtest";
 
-const pct = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+/** Drawing thousands of table rows takes seconds, so show the latest ones and let the user ask for the rest. */
+const MAX_ROWS = 500;
+
+// Rounded first, so a tiny loss reads "0.00%" rather than "-0.00%".
+const pct = (n: number) => {
+  const r = Number(n.toFixed(2));
+  return `${r > 0 ? "+" : ""}${r.toFixed(2)}%`;
+};
 const money = (n: number) =>
   `${n < 0 ? "-" : "+"}$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 const tone = (n: number) => (n > 0 ? "text-green-600" : n < 0 ? "text-red-600" : "");
 const ratio = (n: number | null) => (n === null ? "–" : Number.isFinite(n) ? n.toFixed(2) : "∞");
+// Cents are too coarse for sub-dollar prices: 0.00012 would read as 0.00.
+const price = (n: number) => (n >= 1 ? n.toFixed(2) : n.toPrecision(3));
 
 export default function BacktestResults({ result }: { result: BacktestResult }) {
+  const [showAll, setShowAll] = useState(false);
   const { stats, trades } = result;
+  const shown = showAll ? trades : trades.slice(-MAX_ROWS);
+  const firstNumber = trades.length - shown.length + 1;
   const tiles: { label: string; value: string; sub?: string; cls?: string; hint?: string }[] = [
     { label: "Total trades", value: String(stats.trades) },
     { label: "Win rate", value: `${stats.winRatePct.toFixed(1)}%` },
@@ -67,40 +82,56 @@ export default function BacktestResults({ result }: { result: BacktestResult }) 
       {trades.length === 0 ? (
         <p className="text-sm text-zinc-500">No trades were triggered with these settings.</p>
       ) : (
-        <div className="max-h-80 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
-          <table className="w-full text-right font-mono text-sm">
-            <thead className="sticky top-0 bg-zinc-100 font-sans dark:bg-zinc-900">
-              <tr>
-                {["#", "Side", "Entry", "Exit", "Entry price", "Exit price", "Return", ...(stats.totalCosts > 0 ? ["Costs"] : []), "Bars", "Exit reason"].map((h) => (
-                  <th key={h} className="px-3 py-2 font-medium first:text-left last:text-left">
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {trades.map((t, n) => (
-                <tr key={t.entryIndex} className="border-t border-zinc-200 dark:border-zinc-800">
-                  <td className="px-3 py-1.5 text-left text-zinc-500">{n + 1}</td>
-                  <td className="px-3 py-1.5 text-left font-sans capitalize">{t.direction}</td>
-                  <td className="px-3 py-1.5">{t.entryDate}</td>
-                  <td className="px-3 py-1.5">{t.exitDate}</td>
-                  <td className="px-3 py-1.5">{t.entryPrice.toFixed(2)}</td>
-                  <td className="px-3 py-1.5">{t.exitPrice.toFixed(2)}</td>
-                  <td className={`px-3 py-1.5 ${tone(t.returnPct)}`}>{pct(t.returnPct)}</td>
-                  {stats.totalCosts > 0 && <td className="px-3 py-1.5">${t.costs.toFixed(2)}</td>}
-                  <td className="px-3 py-1.5">{t.exitIndex - t.entryIndex + 1}</td>
-                  <td className="px-3 py-1.5 text-left font-sans">
-                    {t.exitReason}
-                    {t.ambiguous && (
-                      <span title="This candle reached both the stop and the target; the order is an assumption."> *</span>
-                    )}
-                  </td>
+        <>
+          {trades.length > MAX_ROWS && (
+            <p className="flex flex-wrap items-center gap-3 text-xs text-zinc-500">
+              {showAll
+                ? `Showing all ${trades.length.toLocaleString("en-US")} trades.`
+                : `Showing the latest ${MAX_ROWS} of ${trades.length.toLocaleString("en-US")} trades.`}
+              <button
+                type="button"
+                onClick={() => setShowAll(!showAll)}
+                className="rounded-full border border-zinc-300 px-3 py-1 dark:border-zinc-700"
+              >
+                {showAll ? `Show only the latest ${MAX_ROWS}` : `Show all ${trades.length.toLocaleString("en-US")}`}
+              </button>
+            </p>
+          )}
+          <div className="max-h-80 overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+            <table className="w-full text-right font-mono text-sm">
+              <thead className="sticky top-0 bg-zinc-100 font-sans dark:bg-zinc-900">
+                <tr>
+                  {["#", "Side", "Entry", "Exit", "Entry price", "Exit price", "Return", ...(stats.totalCosts > 0 ? ["Costs"] : []), "Bars", "Exit reason"].map((h) => (
+                    <th key={h} className="px-3 py-2 font-medium first:text-left last:text-left">
+                      {h}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {shown.map((t, n) => (
+                  <tr key={t.entryIndex} className="border-t border-zinc-200 dark:border-zinc-800">
+                    <td className="px-3 py-1.5 text-left text-zinc-500">{firstNumber + n}</td>
+                    <td className="px-3 py-1.5 text-left font-sans capitalize">{t.direction}</td>
+                    <td className="px-3 py-1.5">{t.entryDate}</td>
+                    <td className="px-3 py-1.5">{t.exitDate}</td>
+                    <td className="px-3 py-1.5">{price(t.entryPrice)}</td>
+                    <td className="px-3 py-1.5">{price(t.exitPrice)}</td>
+                    <td className={`px-3 py-1.5 ${tone(t.returnPct)}`}>{pct(t.returnPct)}</td>
+                    {stats.totalCosts > 0 && <td className="px-3 py-1.5">${t.costs.toFixed(2)}</td>}
+                    <td className="px-3 py-1.5">{t.exitIndex - t.entryIndex + 1}</td>
+                    <td className="px-3 py-1.5 text-left font-sans">
+                      {t.exitReason}
+                      {t.ambiguous && (
+                        <span title="This candle reached both the stop and the target; the order is an assumption."> *</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </section>
   );

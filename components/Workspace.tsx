@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import BacktestResults from "@/components/BacktestResults";
-import CandleChart from "@/components/CandleChart";
+import CandleChart, { MAX_MARKED_TRADES } from "@/components/CandleChart";
 import CsvUpload from "@/components/CsvUpload";
 import EquityChart from "@/components/EquityChart";
 import ImageUpload from "@/components/ImageUpload";
@@ -18,6 +18,7 @@ export default function Workspace() {
   const [source, setSource] = useState<Source>("csv");
   const [candles, setCandles] = useState<Candle[]>([]);
   const [result, setResult] = useState<BacktestResult | null>(null);
+  const [runs, setRuns] = useState(0); // keys the results so each run starts with its own table state
 
   function load(c: Candle[]) {
     setCandles(c);
@@ -28,6 +29,8 @@ export default function Workspace() {
     <button
       type="button"
       role="tab"
+      id={`tab-${value}`}
+      aria-controls={`panel-${value}`}
       aria-selected={source === value}
       onClick={() => setSource(value)}
       className={`rounded-full px-4 py-1.5 text-sm font-medium ${
@@ -47,10 +50,10 @@ export default function Workspace() {
         {tab("image", "PNG chart image")}
       </div>
       {/* Both stay mounted so switching tabs doesn't throw away a half-configured upload. */}
-      <div hidden={source !== "csv"}>
+      <div role="tabpanel" id="panel-csv" aria-labelledby="tab-csv" hidden={source !== "csv"}>
         <CsvUpload onLoad={load} />
       </div>
-      <div hidden={source !== "image"}>
+      <div role="tabpanel" id="panel-image" aria-labelledby="tab-image" hidden={source !== "image"}>
         <ImageUpload onLoad={load} />
       </div>
 
@@ -60,11 +63,19 @@ export default function Workspace() {
             <CandleChart candles={candles} trades={result?.trades ?? NO_TRADES} />
             <p className="text-xs text-zinc-500">
               Scroll to zoom, drag to pan, drag the axes to rescale.
+              {result && result.trades.length > MAX_MARKED_TRADES
+                ? ` Trade arrows are drawn for the trades in view, the latest ${MAX_MARKED_TRADES.toLocaleString("en-US")} if more are.`
+                : ""}
             </p>
           </section>
           {result && <EquityChart equity={result.equity} benchmark={result.benchmark} />}
-          <StrategyPanel onRun={(cfg) => setResult(runBacktest(candles, cfg))} />
-          {result && <BacktestResults result={result} />}
+          <StrategyPanel
+            onRun={(cfg) => {
+              setResult(runBacktest(candles, cfg));
+              setRuns((n) => n + 1);
+            }}
+          />
+          {result && <BacktestResults key={runs} result={result} />}
         </>
       )}
     </>

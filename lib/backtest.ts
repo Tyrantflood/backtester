@@ -110,6 +110,19 @@ export type BacktestResult = {
 
 export const INITIAL_CAPITAL = 10_000;
 
+/**
+ * Comparisons that ignore floating-point noise: two values within one part in 10^12 count as
+ * equal. Without this an average that is mathematically level with another is split by rounding
+ * (3.3 against 3.3000000000000003), and a stop that is exactly a candle's high, such as 11.00
+ * against 11.000000000000002, is missed. Prices to the cent hit this about one time in seven.
+ */
+const EPS = 1e-12;
+const slack = (a: number, b: number) => EPS * Math.max(Math.abs(a), Math.abs(b));
+const lte = (a: number, b: number) => a <= b + slack(a, b);
+const gte = (a: number, b: number) => a >= b - slack(a, b);
+const lt = (a: number, b: number) => !gte(a, b);
+const gt = (a: number, b: number) => !lte(a, b);
+
 /** Returns an error message, or null when the config is runnable. */
 export function validateConfig(cfg: BacktestConfig): string | null {
   const s = cfg.strategy;
@@ -164,8 +177,8 @@ function buildSignals(candles: Candle[], strategy: Strategy): Signals {
     for (let i = 1; i < candles.length; i++) {
       const [f0, s0, f1, s1] = [fast[i - 1], slow[i - 1], fast[i], slow[i]];
       if (f0 === null || s0 === null || f1 === null || s1 === null) continue;
-      const crossUp = f0 <= s0 && f1 > s1;
-      const crossDown = f0 >= s0 && f1 < s1;
+      const crossUp = lte(f0, s0) && gt(f1, s1);
+      const crossDown = gte(f0, s0) && lt(f1, s1);
       sig.long.entry[i] = crossUp;
       sig.long.exit[i] = crossDown;
       sig.short.entry[i] = crossDown;
@@ -177,10 +190,10 @@ function buildSignals(candles: Candle[], strategy: Strategy): Signals {
       const [r0, r1] = [r[i - 1], r[i]];
       if (r0 === null || r1 === null) continue;
       // Entries need a fresh cross (not merely sitting beyond the level); exits are level-based.
-      sig.long.entry[i] = r0 > strategy.oversold && r1 <= strategy.oversold;
-      sig.long.exit[i] = r1 >= strategy.overbought;
-      sig.short.entry[i] = r0 < strategy.overbought && r1 >= strategy.overbought;
-      sig.short.exit[i] = r1 <= strategy.oversold;
+      sig.long.entry[i] = gt(r0, strategy.oversold) && lte(r1, strategy.oversold);
+      sig.long.exit[i] = gte(r1, strategy.overbought);
+      sig.short.entry[i] = lt(r0, strategy.overbought) && gte(r1, strategy.overbought);
+      sig.short.exit[i] = lte(r1, strategy.oversold);
     }
   }
   return sig;
@@ -308,16 +321,16 @@ export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestRes
       const stopReason: ExitReason = liquidates ? "liquidated" : "stop-loss";
 
       // A long's stop is hit by the low and its target by the high; a short's the other way round.
-      const hitStop = stop !== null && (pos.dir === "long" ? c.low <= stop : c.high >= stop);
-      const hitTarget = target !== null && (pos.dir === "long" ? c.high >= target : c.low <= target);
+      const hitStop = stop !== null && (pos.dir === "long" ? lte(c.low, stop) : gte(c.high, stop));
+      const hitTarget = target !== null && (pos.dir === "long" ? gte(c.high, target) : lte(c.low, target));
       if (hitStop || hitTarget) {
         // A gap past a level settles the order; only a candle that opens between the two
         // levels and then reaches both is genuinely ambiguous, so the chosen rule decides.
         let stopFirst = hitStop;
         let ambiguous = false;
         if (hitStop && hitTarget) {
-          const gapsThroughStop = pos.dir === "long" ? c.open <= stop! : c.open >= stop!;
-          const gapsThroughTarget = pos.dir === "long" ? c.open >= target! : c.open <= target!;
+          const gapsThroughStop = pos.dir === "long" ? lte(c.open, stop!) : gte(c.open, stop!);
+          const gapsThroughTarget = pos.dir === "long" ? gte(c.open, target!) : lte(c.open, target!);
           if (gapsThroughStop) stopFirst = true;
           else if (gapsThroughTarget) stopFirst = false;
           else {

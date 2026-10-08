@@ -82,21 +82,32 @@ export function extractCandles(img: PixelImage, opt: ExtractOptions): ExtractRes
   const toPrice = (y: number) =>
     opt.topPrice + ((y - refTopY) * (opt.bottomPrice - opt.topPrice)) / (refBottomY - refTopY);
 
-  const tol2 = opt.tolerance * opt.tolerance;
-  const dist2 = (r: number, g: number, b: number, c: [number, number, number]) =>
-    (r - c[0]) ** 2 + (g - c[1]) ** 2 + (b - c[2]) ** 2;
+  const tol = opt.tolerance;
+  const tol2 = tol * tol;
+  const [bullR, bullG, bullB] = bull;
+  const [bearR, bearG, bearB] = bear;
 
   // Per column: pixel count and vertical extent for each candle colour.
   const count = [new Int32Array(width), new Int32Array(width), new Int32Array(width)];
   const top = [new Int32Array(width).fill(-1), new Int32Array(width).fill(-1), new Int32Array(width).fill(-1)];
   const bottom = [new Int32Array(width).fill(-1), new Int32Array(width).fill(-1), new Int32Array(width).fill(-1)];
 
-  for (let x = 0; x < width; x++) {
-    for (let y = rowStart; y <= rowEnd; y++) {
+  // Walk row by row, the order the pixels sit in memory. Going column by column jumps a whole row
+  // per step and spends most of its time waiting on the cache; the result is the same either way.
+  for (let y = rowStart; y <= rowEnd; y++) {
+    for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4;
       if (data[i + 3] < 128) continue; // transparent background
-      const dBull = dist2(data[i], data[i + 1], data[i + 2], bull);
-      const dBear = dist2(data[i], data[i + 1], data[i + 2], bear);
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      // Nearly every pixel is background. A pixel is within `tol` (Euclidean) of a colour only if
+      // each channel is, so one cheap test per colour clears those before the exact distance.
+      const nearBull = Math.abs(r - bullR) <= tol && Math.abs(g - bullG) <= tol && Math.abs(b - bullB) <= tol;
+      const nearBear = Math.abs(r - bearR) <= tol && Math.abs(g - bearG) <= tol && Math.abs(b - bearB) <= tol;
+      if (!nearBull && !nearBear) continue;
+      const dBull = nearBull ? (r - bullR) ** 2 + (g - bullG) ** 2 + (b - bullB) ** 2 : Infinity;
+      const dBear = nearBear ? (r - bearR) ** 2 + (g - bearG) ** 2 + (b - bearB) ** 2 : Infinity;
       let k = NONE;
       if (dBull <= tol2 && dBull <= dBear) k = BULL;
       else if (dBear <= tol2) k = BEAR;
@@ -124,16 +135,20 @@ export function extractCandles(img: PixelImage, opt: ExtractOptions): ExtractRes
     const tops: number[] = [];
     const bottoms: number[] = [];
     let pixels = 0;
+    let wickTop = Infinity;
+    let wickBottom = -Infinity;
     for (let c = x; c <= end; c++) {
-      tops.push(top[kind][c]);
-      bottoms.push(bottom[kind][c] + 1);
+      const t = top[kind][c];
+      const b = bottom[kind][c] + 1;
+      tops.push(t);
+      bottoms.push(b);
       pixels += count[kind][c];
+      if (t < wickTop) wickTop = t;
+      if (b > wickBottom) wickBottom = b;
     }
 
     // A run of 1-2 stray pixels is noise (text, anti-aliasing), not a candle.
     if (pixels >= 3) {
-      const wickTop = Math.min(...tops);
-      const wickBottom = Math.max(...bottoms);
       let bodyTop: number;
       let bodyBottom: number;
       if (tops.length >= 3) {

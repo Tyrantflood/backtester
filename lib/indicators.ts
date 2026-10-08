@@ -6,6 +6,13 @@ export function sma(values: number[], period: number): (number | null)[] {
   for (let i = 0; i < values.length; i++) {
     sum += values[i];
     if (i >= period) sum -= values[i - period];
+    // A running sum picks up rounding error (0.1 + 0.2 - 0.1 is not 0.2), enough that sma(x, 1)
+    // would not return x. Re-summing the window every `period` bars keeps that error from
+    // building up, and makes a period of 1 exact, for O(1) extra work per bar.
+    if (i >= period - 1 && (i + 1) % period === 0) {
+      sum = 0;
+      for (let j = i - period + 1; j <= i; j++) sum += values[j];
+    }
     if (i >= period - 1) out[i] = sum / period;
   }
   return out;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -8,20 +8,69 @@ import {
   HistogramSeries,
   createChart,
   createSeriesMarkers,
+  type IChartApi,
+  type ISeriesMarkersPluginApi,
+  type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { Trade } from "@/lib/backtest";
 import type { Candle } from "@/lib/parseCandles";
+import { tradesInRange } from "@/lib/visibleTrades";
 
 const UP = "#16a34a";
 const DOWN = "#dc2626";
+
+/** More arrows than this on screen cannot be read, and thousands of them make the chart crawl. */
+export const MAX_MARKED_TRADES = 1000;
 
 function toTime(date: string): UTCTimestamp {
   return (Date.parse(`${date}T00:00:00Z`) / 1000) as UTCTimestamp;
 }
 
+// The arrow shows the order placed: up = buy, down = sell. A long buys then sells; a short sells
+// then buys back ("Cover"). The percentage is on the closing marker.
+function toMarkers(t: Trade) {
+  const long = t.direction === "long";
+  const pct = `${t.returnPct >= 0 ? "+" : ""}${t.returnPct.toFixed(1)}%`;
+  const buy = (text: string) => ({
+    position: "belowBar" as const,
+    shape: "arrowUp" as const,
+    color: UP,
+    text,
+  });
+  const sell = (text: string) => ({
+    position: "aboveBar" as const,
+    shape: "arrowDown" as const,
+    color: DOWN,
+    text,
+  });
+  return [
+    { time: toTime(t.entryDate), ...(long ? buy("Buy") : sell("Short")) },
+    { time: toTime(t.exitDate), ...(long ? sell(`Sell ${pct}`) : buy(`Cover ${pct}`)) },
+  ];
+}
+
 export default function CandleChart({ candles, trades }: { candles: Candle[]; trades: Trade[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const tradesRef = useRef(trades);
+
+  // Draws arrows only for the trades in the part of the chart that is on screen.
+  const refreshMarkers = useCallback(() => {
+    const chart = chartRef.current;
+    const markers = markersRef.current;
+    if (!chart || !markers) return;
+    const range = chart.timeScale().getVisibleLogicalRange();
+    const shown = tradesInRange(tradesRef.current, range?.from ?? -Infinity, range?.to ?? Infinity, MAX_MARKED_TRADES);
+    markers.setMarkers(shown.flatMap(toMarkers));
+  }, []);
+
+  // A new backtest only swaps the markers; the chart, and wherever the user has zoomed to, stay put.
+  useEffect(() => {
+    tradesRef.current = trades;
+    refreshMarkers();
+  }, [trades, refreshMarkers]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -80,39 +129,23 @@ export default function CandleChart({ candles, trades }: { candles: Candle[]; tr
       })),
     );
 
-    createSeriesMarkers(
-      price,
-      // The arrow shows the order placed: up = buy, down = sell. A long buys then sells; a short
-      // sells then buys back ("Cover"). The percentage is on the closing marker.
-      trades.flatMap((t) => {
-        const long = t.direction === "long";
-        const pct = `${t.returnPct >= 0 ? "+" : ""}${t.returnPct.toFixed(1)}%`;
-        const buy = (text: string) => ({
-          position: "belowBar" as const,
-          shape: "arrowUp" as const,
-          color: UP,
-          text,
-        });
-        const sell = (text: string) => ({
-          position: "aboveBar" as const,
-          shape: "arrowDown" as const,
-          color: DOWN,
-          text,
-        });
-        return [
-          { time: toTime(t.entryDate), ...(long ? buy("Buy") : sell("Short")) },
-          { time: toTime(t.exitDate), ...(long ? sell(`Sell ${pct}`) : buy(`Cover ${pct}`)) },
-        ];
-      }),
-    );
-
     // Start on the most recent ~200 candles so a large file isn't an unreadable smear.
     const last = candles.length - 1;
     if (candles.length > 200) chart.timeScale().setVisibleLogicalRange({ from: last - 200, to: last + 5 });
     else chart.timeScale().fitContent();
 
-    return () => chart.remove();
-  }, [candles, trades]);
+    chartRef.current = chart;
+    markersRef.current = createSeriesMarkers(price, []);
+    chart.timeScale().subscribeVisibleLogicalRangeChange(refreshMarkers);
+    refreshMarkers();
+
+    return () => {
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshMarkers);
+      chartRef.current = null;
+      markersRef.current = null;
+      chart.remove();
+    };
+  }, [candles, refreshMarkers]);
 
   return (
     <div
