@@ -123,6 +123,16 @@ const gte = (a: number, b: number) => a >= b - slack(a, b);
 const lt = (a: number, b: number) => !gte(a, b);
 const gt = (a: number, b: number) => !lte(a, b);
 
+/**
+ * Reads a cost field. Empty means zero, but a number input also reports "" when the text typed
+ * into it is unparseable ("1e", "--"); `badInput` marks that case so it becomes NaN, which
+ * validateConfig rejects, instead of a silent zero.
+ */
+export function parseCost(raw: string, badInput = false): number {
+  if (badInput) return NaN;
+  return raw.trim() === "" ? 0 : Number(raw);
+}
+
 /** Returns an error message, or null when the config is runnable. */
 export function validateConfig(cfg: BacktestConfig): string | null {
   const s = cfg.strategy;
@@ -149,7 +159,7 @@ export function validateConfig(cfg: BacktestConfig): string | null {
     ["Slippage", c.slippagePct],
     ["Commission", c.commission],
   ] as const) {
-    if (!(Number.isFinite(v) && v >= 0)) return `${label} must be 0 or more.`;
+    if (!(Number.isFinite(v) && v >= 0)) return `${label} must be a number, 0 or more.`;
   }
   if (c.spreadPct / 2 + c.slippagePct >= 100) return "Spread and slippage are too large: a fill would lose the whole price.";
   return null;

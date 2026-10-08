@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { validateConfig, type BacktestConfig, type SameCandleRule, type TradeMode } from "@/lib/backtest";
+import { parseCost, validateConfig, type BacktestConfig, type SameCandleRule, type TradeMode } from "@/lib/backtest";
 
 type Kind = "ma-cross" | "rsi";
 
@@ -16,7 +16,7 @@ function Field({
 }: {
   label: string;
   value: string;
-  onChange: (v: string) => void;
+  onChange: (v: string, badInput: boolean) => void;
   placeholder?: string;
 }) {
   return (
@@ -28,7 +28,7 @@ function Field({
         className={INPUT}
         value={value}
         placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => onChange(e.target.value, e.target.validity.badInput)}
       />
     </label>
   );
@@ -48,12 +48,16 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
   const [slippage, setSlippage] = useState("");
   const [commission, setCommission] = useState("");
   const [sameCandle, setSameCandle] = useState<SameCandleRule>("stop-first");
+  const [badCosts, setBadCosts] = useState({ spread: false, slippage: false, commission: false });
   const [error, setError] = useState<string | null>(null);
 
   // Empty means "disabled"; anything else must parse, which validateConfig then range-checks.
   const optional = (s: string) => (s.trim() === "" ? null : Number(s));
-  // Costs left empty are zero; anything unparseable stays NaN so validateConfig rejects it.
-  const cost = (s: string) => (s.trim() === "" ? 0 : Number(s));
+  // A cost field holding unparseable text reads as "", so the input's badInput flag is tracked too.
+  const costField = (key: keyof typeof badCosts, set: (v: string) => void) => (v: string, bad: boolean) => {
+    set(v);
+    setBadCosts((b) => ({ ...b, [key]: bad }));
+  };
 
   function run() {
     const cfg: BacktestConfig = {
@@ -65,7 +69,11 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
       takeProfitPct: optional(takeProfit),
       mode,
       sameCandle,
-      costs: { spreadPct: cost(spread), slippagePct: cost(slippage), commission: cost(commission) },
+      costs: {
+        spreadPct: parseCost(spread, badCosts.spread),
+        slippagePct: parseCost(slippage, badCosts.slippage),
+        commission: parseCost(commission, badCosts.commission),
+      },
     };
     const problem = validateConfig(cfg) ?? (Object.values(cfg.strategy).some(Number.isNaN) ? "Enter a number in every field." : null);
     setError(problem);
@@ -126,9 +134,9 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
       <div className="flex flex-wrap items-end gap-4">
         <Field label="Stop loss %" value={stopLoss} onChange={setStopLoss} placeholder="off" />
         <Field label="Take profit %" value={takeProfit} onChange={setTakeProfit} placeholder="off" />
-        <Field label="Spread %" value={spread} onChange={setSpread} placeholder="0" />
-        <Field label="Slippage %" value={slippage} onChange={setSlippage} placeholder="0" />
-        <Field label="Commission $ / order" value={commission} onChange={setCommission} placeholder="0" />
+        <Field label="Spread %" value={spread} onChange={costField("spread", setSpread)} placeholder="0" />
+        <Field label="Slippage %" value={slippage} onChange={costField("slippage", setSlippage)} placeholder="0" />
+        <Field label="Commission $ / order" value={commission} onChange={costField("commission", setCommission)} placeholder="0" />
         <label className="flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">
           If one candle hits both
           <select

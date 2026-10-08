@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   INITIAL_CAPITAL,
+  parseCost,
   runBacktest,
   validateConfig,
   type BacktestConfig,
@@ -582,6 +583,21 @@ describe("both mode against long and short run separately", () => {
     const r = sets({ commission: 25 });
     assert.ok(r.sameTrades, "still the same trades; only the commission's weight differs");
     assert.ok(Math.abs(r.both - r.product) > 1, `both ${r.both.toFixed(2)} vs long x short ${r.product.toFixed(2)}`);
+  });
+});
+
+describe("parseCost", () => {
+  it("reads empty as zero and numbers as themselves", () => {
+    assert.equal(parseCost(""), 0);
+    assert.equal(parseCost("  "), 0);
+    assert.equal(parseCost("0.25"), 0.25);
+  });
+  it("turns unparseable input into NaN that blocks the run, rather than zero", () => {
+    // A number input reports "" for text like "1e", so only the badInput flag tells it from empty.
+    assert.ok(Number.isNaN(parseCost("", true)));
+    assert.ok(Number.isNaN(parseCost("abc")));
+    const costs = { spreadPct: 0, slippagePct: parseCost("", true), commission: 0 };
+    assert.match(validateConfig({ ...cfg(MA_1_2), costs }) ?? "", /Slippage must be a number/);
   });
 });
 
