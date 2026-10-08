@@ -5,12 +5,17 @@ export type Strategy =
   | { type: "ma-cross"; fast: number; slow: number }
   | { type: "rsi"; period: number; oversold: number; overbought: number };
 
+/** Which level a candle that touches both stop and target is assumed to have hit first. */
+export type SameCandleRule = "stop-first" | "target-first" | "by-candle-colour";
+
 export type BacktestConfig = {
   strategy: Strategy;
   /** Percent below entry price, e.g. 5 = 5%. Null disables the stop. */
   stopLossPct: number | null;
   /** Percent above entry price. Null disables the target. */
   takeProfitPct: number | null;
+  /** Only matters when a single candle's range covers both levels. */
+  sameCandle: SameCandleRule;
 };
 
 export type ExitReason = "signal" | "stop-loss" | "take-profit" | "end-of-data";
@@ -24,6 +29,8 @@ export type Trade = {
   exitPrice: number;
   returnPct: number;
   exitReason: ExitReason;
+  /** True when this candle touched both stop and target, so the exit order was an assumption. */
+  ambiguous: boolean;
 };
 
 export type BacktestStats = {
@@ -98,7 +105,7 @@ export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestRes
   const trades: Trade[] = [];
 
   let open: { index: number; price: number } | null = null;
-  const close = (exitIndex: number, exitPrice: number, exitReason: ExitReason) => {
+  const close = (exitIndex: number, exitPrice: number, exitReason: ExitReason, ambiguous = false) => {
     if (!open) return;
     trades.push({
       entryIndex: open.index,
@@ -109,6 +116,7 @@ export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestRes
       exitPrice,
       returnPct: (exitPrice / open.price - 1) * 100,
       exitReason,
+      ambiguous,
     });
     open = null;
   };
@@ -124,9 +132,26 @@ export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestRes
     if (open) {
       const stop = cfg.stopLossPct === null ? null : open.price * (1 - cfg.stopLossPct / 100);
       const target = cfg.takeProfitPct === null ? null : open.price * (1 + cfg.takeProfitPct / 100);
-      // If one bar touches both levels the order is unknowable; assume the stop hit first.
-      if (stop !== null && c.low <= stop) close(i, Math.min(c.open, stop), "stop-loss");
-      else if (target !== null && c.high >= target) close(i, Math.max(c.open, target), "take-profit");
+      const hitStop = stop !== null && c.low <= stop;
+      const hitTarget = target !== null && c.high >= target;
+      if (hitStop || hitTarget) {
+        // A gap past a level settles the order; only a candle that opens between the two
+        // levels and then reaches both is genuinely ambiguous, so the chosen rule decides.
+        let stopFirst = hitStop;
+        let ambiguous = false;
+        if (hitStop && hitTarget) {
+          if (c.open <= stop!) stopFirst = true;
+          else if (c.open >= target!) stopFirst = false;
+          else {
+            ambiguous = true;
+            // Bullish candle: assume it dipped before it rallied; bearish: the reverse.
+            stopFirst =
+              cfg.sameCandle === "stop-first" || (cfg.sameCandle === "by-candle-colour" && c.close >= c.open);
+          }
+        }
+        if (stopFirst) close(i, Math.min(c.open, stop!), "stop-loss", ambiguous);
+        else close(i, Math.max(c.open, target!), "take-profit", ambiguous);
+      }
     }
   }
 

@@ -25,6 +25,12 @@ export default function BacktestResults({ result }: { result: BacktestResult }) 
         ))}
       </div>
 
+      {trades.some((t) => t.ambiguous) && (
+        <p className="text-xs text-zinc-500">
+          * One candle reached both the stop and the target, so the exit order follows your &quot;if one candle hits both&quot; setting.
+        </p>
+      )}
+
       {trades.length === 0 ? (
         <p className="text-sm text-zinc-500">No trades were triggered with these settings.</p>
       ) : (
@@ -47,7 +53,11 @@ export default function BacktestResults({ result }: { result: BacktestResult }) 
                   <td className="px-3 py-1.5">{t.entryPrice.toFixed(2)}</td>
                   <td className="px-3 py-1.5">{t.exitPrice.toFixed(2)}</td>
                   <td className={`px-3 py-1.5 ${tone(t.returnPct)}`}>{pct(t.returnPct)}</td>
-                  <td className="px-3 py-1.5 text-left font-sans">{t.exitReason}</td>
+                  <td className="px-3 py-1.5 text-left font-sans">{t.exitReason}
+                    {t.ambiguous && (
+                      <span title="This candle reached both the stop and the target; the order is an assumption."> *</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

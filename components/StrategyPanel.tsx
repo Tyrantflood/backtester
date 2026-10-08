@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { validateConfig, type BacktestConfig } from "@/lib/backtest";
+import { validateConfig, type BacktestConfig, type SameCandleRule } from "@/lib/backtest";
 
 type Kind = "ma-cross" | "rsi";
 
@@ -43,6 +43,7 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
   const [overbought, setOverbought] = useState("70");
   const [stopLoss, setStopLoss] = useState("");
   const [takeProfit, setTakeProfit] = useState("");
+  const [sameCandle, setSameCandle] = useState<SameCandleRule>("stop-first");
   const [error, setError] = useState<string | null>(null);
 
   // Empty means "disabled"; anything else must parse, which validateConfig then range-checks.
@@ -56,6 +57,7 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
           : { type: "rsi", period: Number(period), oversold: Number(oversold), overbought: Number(overbought) },
       stopLossPct: optional(stopLoss),
       takeProfitPct: optional(takeProfit),
+      sameCandle,
     };
     const problem = validateConfig(cfg) ?? (Object.values(cfg.strategy).some(Number.isNaN) ? "Enter a number in every field." : null);
     setError(problem);
@@ -96,6 +98,18 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
       <div className="flex flex-wrap items-end gap-4">
         <Field label="Stop loss %" value={stopLoss} onChange={setStopLoss} placeholder="off" />
         <Field label="Take profit %" value={takeProfit} onChange={setTakeProfit} placeholder="off" />
+        <label className="flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">
+          If one candle hits both
+          <select
+            className={`${INPUT} w-60`}
+            value={sameCandle}
+            onChange={(e) => setSameCandle(e.target.value as SameCandleRule)}
+          >
+            <option value="stop-first">Assume stop first (cautious)</option>
+            <option value="target-first">Assume target first (optimistic)</option>
+            <option value="by-candle-colour">Green: stop first, red: target first</option>
+          </select>
+        </label>
         <button
           type="button"
           onClick={run}
