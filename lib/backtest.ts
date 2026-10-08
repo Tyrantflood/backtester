@@ -191,7 +191,7 @@ export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestRes
   return { trades, stats: computeStats(trades, equity, benchmark), equity, benchmark };
 }
 
-function computeStats(trades: Trade[], equity: EquityPoint[], benchmark: EquityPoint[]): BacktestStats {
+export function computeStats(trades: Trade[], equity: EquityPoint[], benchmark: EquityPoint[]): BacktestStats {
   let peak = INITIAL_CAPITAL;
   let maxDd = 0;
   for (const p of equity) {
