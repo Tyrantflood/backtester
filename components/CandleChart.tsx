@@ -82,22 +82,28 @@ export default function CandleChart({ candles, trades }: { candles: Candle[]; tr
 
     createSeriesMarkers(
       price,
-      trades.flatMap((t) => [
-        {
-          time: toTime(t.entryDate),
+      // The arrow shows the order placed: up = buy, down = sell. A long buys then sells; a short
+      // sells then buys back ("Cover"). The percentage is on the closing marker.
+      trades.flatMap((t) => {
+        const long = t.direction === "long";
+        const pct = `${t.returnPct >= 0 ? "+" : ""}${t.returnPct.toFixed(1)}%`;
+        const buy = (text: string) => ({
           position: "belowBar" as const,
           shape: "arrowUp" as const,
           color: UP,
-          text: "Buy",
-        },
-        {
-          time: toTime(t.exitDate),
+          text,
+        });
+        const sell = (text: string) => ({
           position: "aboveBar" as const,
           shape: "arrowDown" as const,
           color: DOWN,
-          text: `Sell ${t.returnPct >= 0 ? "+" : ""}${t.returnPct.toFixed(1)}%`,
-        },
-      ]),
+          text,
+        });
+        return [
+          { time: toTime(t.entryDate), ...(long ? buy("Buy") : sell("Short")) },
+          { time: toTime(t.exitDate), ...(long ? sell(`Sell ${pct}`) : buy(`Cover ${pct}`)) },
+        ];
+      }),
     );
 
     // Start on the most recent ~200 candles so a large file isn't an unreadable smear.

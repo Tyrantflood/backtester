@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { validateConfig, type BacktestConfig, type SameCandleRule } from "@/lib/backtest";
+import { validateConfig, type BacktestConfig, type SameCandleRule, type TradeMode } from "@/lib/backtest";
 
 type Kind = "ma-cross" | "rsi";
 
@@ -43,6 +43,7 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
   const [overbought, setOverbought] = useState("70");
   const [stopLoss, setStopLoss] = useState("");
   const [takeProfit, setTakeProfit] = useState("");
+  const [mode, setMode] = useState<TradeMode>("long");
   const [sameCandle, setSameCandle] = useState<SameCandleRule>("stop-first");
   const [error, setError] = useState<string | null>(null);
 
@@ -57,6 +58,7 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
           : { type: "rsi", period: Number(period), oversold: Number(oversold), overbought: Number(overbought) },
       stopLossPct: optional(stopLoss),
       takeProfitPct: optional(takeProfit),
+      mode,
       sameCandle,
     };
     const problem = validateConfig(cfg) ?? (Object.values(cfg.strategy).some(Number.isNaN) ? "Enter a number in every field." : null);
@@ -67,6 +69,26 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
   return (
     <section className="space-y-4 rounded-md border border-zinc-200 p-4 dark:border-zinc-800">
       <h2 className="text-sm font-semibold">Strategy</h2>
+
+      <div role="radiogroup" aria-label="Trade direction" className="flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">
+        Trade
+        <div className="inline-flex w-fit overflow-hidden rounded-md border border-zinc-300 dark:border-zinc-700">
+          {(["long", "short", "both"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="radio"
+              aria-checked={mode === m}
+              onClick={() => setMode(m)}
+              className={`px-4 py-1.5 text-sm capitalize ${
+                mode === m ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900" : ""
+              }`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <div className="flex flex-wrap items-end gap-4">
         <label className="flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">
@@ -107,7 +129,7 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
           >
             <option value="stop-first">Assume stop first (cautious)</option>
             <option value="target-first">Assume target first (optimistic)</option>
-            <option value="by-candle-colour">Green: stop first, red: target first</option>
+            <option value="by-candle-colour">By candle shape (green dips first, red rallies first)</option>
           </select>
         </label>
         <button
@@ -121,9 +143,9 @@ export default function StrategyPanel({ onRun }: { onRun: (cfg: BacktestConfig) 
 
       <p className="text-xs text-zinc-500">
         {kind === "ma-cross"
-          ? "Buys when the fast average crosses above the slow one; sells on the cross back down."
-          : "Buys when RSI falls through the oversold level; sells once RSI reaches overbought."}{" "}
-        Long only, fills at the next bar&apos;s open.
+          ? "Long: buys when the fast average crosses above the slow one and sells on the cross back down. Short: the mirror image, selling on the cross down and covering on the cross up."
+          : "Long: buys when RSI falls through the oversold level and sells once it reaches overbought. Short: sells as RSI rises through overbought and covers once it drops to oversold."}{" "}
+        Both reverses on each signal. Stop loss and take profit are measured against the entry in the trade&apos;s direction. Fills at the next bar&apos;s open.
       </p>
 
       {error && (

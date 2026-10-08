@@ -10,6 +10,9 @@ export type SameCandleRule = "stop-first" | "target-first" | "by-candle-colour";
 
 export type Direction = "long" | "short";
 
+/** Which sides the strategy may trade. "both" reverses: each exit signal also opens the other side. */
+export type TradeMode = Direction | "both";
+
 /**
  * For a candle that opens between the stop and the target and then reaches both: was the
  * stop hit first? A daily candle doesn't record the order, so "by-candle-colour" guesses from
@@ -30,23 +33,26 @@ export function stopHitFirst(
 
 export type BacktestConfig = {
   strategy: Strategy;
-  /** Percent below entry price, e.g. 5 = 5%. Null disables the stop. */
+  mode: TradeMode;
+  /** Percent against the entry price (below for a long, above for a short). Null disables the stop. */
   stopLossPct: number | null;
-  /** Percent above entry price. Null disables the target. */
+  /** Percent in favour of the entry price (above for a long, below for a short). Null disables it. */
   takeProfitPct: number | null;
   /** Only matters when a single candle's range covers both levels. */
   sameCandle: SameCandleRule;
 };
 
-export type ExitReason = "signal" | "stop-loss" | "take-profit" | "end-of-data";
+export type ExitReason = "signal" | "stop-loss" | "take-profit" | "liquidated" | "end-of-data";
 
 export type Trade = {
+  direction: Direction;
   entryIndex: number;
   exitIndex: number;
   entryDate: string;
   exitDate: string;
   entryPrice: number;
   exitPrice: number;
+  /** Profit as a percent of the entry price; a short gains when the price falls. Floored at -100. */
   returnPct: number;
   exitReason: ExitReason;
   /** True when this candle touched both stop and target, so the exit order was an assumption. */
@@ -84,9 +90,6 @@ export type BacktestResult = {
 
 export const INITIAL_CAPITAL = 10_000;
 
-/** The engine only goes long for now; stopHitFirst already handles shorts for when it doesn't. */
-const DIRECTION: Direction = "long";
-
 /** Returns an error message, or null when the config is runnable. */
 export function validateConfig(cfg: BacktestConfig): string | null {
   const s = cfg.strategy;
@@ -110,12 +113,21 @@ export function validateConfig(cfg: BacktestConfig): string | null {
   return null;
 }
 
-type Signals = { entry: boolean[]; exit: boolean[] };
+type SideSignals = { entry: boolean[]; exit: boolean[] };
+type Signals = Record<Direction, SideSignals>;
 
+/**
+ * Short signals are the mirror image of the long ones. For the crossover that is the same
+ * crossings with entry and exit swapped; for RSI a short sells as RSI rises through overbought
+ * and covers once it drops to oversold.
+ */
 function buildSignals(candles: Candle[], strategy: Strategy): Signals {
+  const blank = () => new Array<boolean>(candles.length).fill(false);
+  const sig: Signals = {
+    long: { entry: blank(), exit: blank() },
+    short: { entry: blank(), exit: blank() },
+  };
   const closes = candles.map((c) => c.close);
-  const entry = new Array<boolean>(candles.length).fill(false);
-  const exit = new Array<boolean>(candles.length).fill(false);
 
   if (strategy.type === "ma-cross") {
     const fast = sma(closes, strategy.fast);
@@ -123,85 +135,127 @@ function buildSignals(candles: Candle[], strategy: Strategy): Signals {
     for (let i = 1; i < candles.length; i++) {
       const [f0, s0, f1, s1] = [fast[i - 1], slow[i - 1], fast[i], slow[i]];
       if (f0 === null || s0 === null || f1 === null || s1 === null) continue;
-      entry[i] = f0 <= s0 && f1 > s1;
-      exit[i] = f0 >= s0 && f1 < s1;
+      const crossUp = f0 <= s0 && f1 > s1;
+      const crossDown = f0 >= s0 && f1 < s1;
+      sig.long.entry[i] = crossUp;
+      sig.long.exit[i] = crossDown;
+      sig.short.entry[i] = crossDown;
+      sig.short.exit[i] = crossUp;
     }
   } else {
     const r = rsi(closes, strategy.period);
     for (let i = 1; i < candles.length; i++) {
       const [r0, r1] = [r[i - 1], r[i]];
       if (r0 === null || r1 === null) continue;
-      // Enter as RSI falls through oversold (not while it merely sits there); exit once overbought.
-      entry[i] = r0 > strategy.oversold && r1 <= strategy.oversold;
-      exit[i] = r1 >= strategy.overbought;
+      // Entries need a fresh cross (not merely sitting beyond the level); exits are level-based.
+      sig.long.entry[i] = r0 > strategy.oversold && r1 <= strategy.oversold;
+      sig.long.exit[i] = r1 >= strategy.overbought;
+      sig.short.entry[i] = r0 < strategy.overbought && r1 >= strategy.overbought;
+      sig.short.exit[i] = r1 <= strategy.oversold;
     }
   }
-  return { entry, exit };
+  return sig;
 }
 
+type Position = { dir: Direction; index: number; price: number };
+
+const sign = (dir: Direction) => (dir === "long" ? 1 : -1);
+
 /**
- * Long-only, one position at a time, all-in. Signals are read at a bar's close and
+ * What one unit of capital is worth when the position is marked at `price`. A short reaches zero at
+ * double its entry price, but it is liquidated before then (see runBacktest), so this stays positive.
+ */
+const worth = (p: Position, price: number) => (p.dir === "long" ? price / p.price : 2 - price / p.price);
+
+/**
+ * One position at a time, all-in, long and/or short. Signals are read at a bar's close and
  * filled at the next bar's open, so no trade uses information from its own bar.
  */
 export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestResult {
-  const { entry, exit } = buildSignals(candles, cfg.strategy);
+  const sig = buildSignals(candles, cfg.strategy);
   const trades: Trade[] = [];
   const equity: EquityPoint[] = [];
+  const canGo = (d: Direction) => cfg.mode === "both" || cfg.mode === d;
 
   let cash = INITIAL_CAPITAL; // account value while flat; the position is valued on top of it
-  let open: { index: number; price: number } | null = null;
+  let pos: Position | null = null;
   const close = (exitIndex: number, exitPrice: number, exitReason: ExitReason, ambiguous = false) => {
-    if (!open) return;
+    if (!pos) return;
+    const returnPct = Math.max(-100, sign(pos.dir) * (exitPrice / pos.price - 1) * 100);
     trades.push({
-      entryIndex: open.index,
+      direction: pos.dir,
+      entryIndex: pos.index,
       exitIndex,
-      entryDate: candles[open.index].date,
+      entryDate: candles[pos.index].date,
       exitDate: candles[exitIndex].date,
-      entryPrice: open.price,
+      entryPrice: pos.price,
       exitPrice,
-      returnPct: (exitPrice / open.price - 1) * 100,
+      returnPct,
       exitReason,
       ambiguous,
     });
-    cash *= exitPrice / open.price;
-    open = null;
+    cash *= 1 + returnPct / 100;
+    pos = null;
   };
 
   for (let i = 0; i < candles.length; i++) {
     const c = candles[i];
 
-    // Fill signals raised on the previous bar at this bar's open.
-    if (open && exit[i - 1]) close(i, c.open, "signal");
-    else if (!open && i > 0 && entry[i - 1]) open = { index: i, price: c.open };
+    // Fill signals raised on the previous bar at this bar's open. An exit that also raises an
+    // entry for the other side reverses straight away, at the same price.
+    if (i > 0) {
+      if (pos && sig[pos.dir].exit[i - 1]) close(i, c.open, "signal");
+      if (!pos) {
+        const dir: Direction | null =
+          canGo("long") && sig.long.entry[i - 1] ? "long" : canGo("short") && sig.short.entry[i - 1] ? "short" : null;
+        if (dir) pos = { dir, index: i, price: c.open };
+      }
+    }
 
     // Stops and targets are checked on the entry bar too, because the fill is at its open.
-    if (open) {
-      const stop = cfg.stopLossPct === null ? null : open.price * (1 - cfg.stopLossPct / 100);
-      const target = cfg.takeProfitPct === null ? null : open.price * (1 + cfg.takeProfitPct / 100);
-      const hitStop = stop !== null && c.low <= stop;
-      const hitTarget = target !== null && c.high >= target;
+    if (pos) {
+      const s = sign(pos.dir);
+      // A short with no stop is liquidated if the price doubles: the account is gone by then.
+      const stop =
+        cfg.stopLossPct !== null
+          ? pos.price * (1 - (s * cfg.stopLossPct) / 100)
+          : pos.dir === "short"
+            ? pos.price * 2
+            : null;
+      const target = cfg.takeProfitPct === null ? null : pos.price * (1 + (s * cfg.takeProfitPct) / 100);
+      const stopReason: ExitReason = cfg.stopLossPct === null ? "liquidated" : "stop-loss";
+
+      // A long's stop is hit by the low and its target by the high; a short's the other way round.
+      const hitStop = stop !== null && (pos.dir === "long" ? c.low <= stop : c.high >= stop);
+      const hitTarget = target !== null && (pos.dir === "long" ? c.high >= target : c.low <= target);
       if (hitStop || hitTarget) {
         // A gap past a level settles the order; only a candle that opens between the two
         // levels and then reaches both is genuinely ambiguous, so the chosen rule decides.
         let stopFirst = hitStop;
         let ambiguous = false;
         if (hitStop && hitTarget) {
-          if (c.open <= stop!) stopFirst = true;
-          else if (c.open >= target!) stopFirst = false;
+          const gapsThroughStop = pos.dir === "long" ? c.open <= stop! : c.open >= stop!;
+          const gapsThroughTarget = pos.dir === "long" ? c.open >= target! : c.open <= target!;
+          if (gapsThroughStop) stopFirst = true;
+          else if (gapsThroughTarget) stopFirst = false;
           else {
             ambiguous = true;
-            stopFirst = stopHitFirst(cfg.sameCandle, DIRECTION, c);
+            stopFirst = stopHitFirst(cfg.sameCandle, pos.dir, c);
           }
         }
-        if (stopFirst) close(i, Math.min(c.open, stop!), "stop-loss", ambiguous);
-        else close(i, Math.max(c.open, target!), "take-profit", ambiguous);
+        // Gaps fill at the open when it is already beyond the level, otherwise at the level.
+        if (stopFirst) {
+          close(i, pos.dir === "long" ? Math.min(c.open, stop!) : Math.max(c.open, stop!), stopReason, ambiguous);
+        } else {
+          close(i, pos.dir === "long" ? Math.max(c.open, target!) : Math.min(c.open, target!), "take-profit", ambiguous);
+        }
       }
     }
 
-    equity.push({ date: c.date, value: open ? cash * (c.close / open.price) : cash });
+    equity.push({ date: c.date, value: pos ? cash * worth(pos, c.close) : cash });
   }
 
-  if (open) {
+  if (pos) {
     // Closes at the last close, which is exactly where the final equity point is already marked.
     const last = candles.length - 1;
     close(last, candles[last].close, "end-of-data");

@@ -12,30 +12,7 @@ import {
   type Trade,
 } from "@/lib/backtest";
 import type { Candle } from "@/lib/parseCandles";
-
-const near = (actual: number | null, expected: number, eps = 1e-6) => {
-  assert.notEqual(actual, null);
-  assert.ok(Math.abs((actual as number) - expected) < eps, `expected ${expected}, got ${actual}`);
-};
-
-const date = (i: number) => new Date(Date.UTC(2024, 0, 1 + i)).toISOString().slice(0, 10);
-
-/** Candles from explicit [open, high, low, close] rows. */
-const bars = (rows: [number, number, number, number][]): Candle[] =>
-  rows.map(([open, high, low, close], i) => ({ date: date(i), open, high, low, close, volume: 1 }));
-
-/** Candles from opens and closes; wicks are 0.1 beyond the body so they never trigger stops. */
-const fromOC = (opens: number[], closes: number[]): Candle[] =>
-  bars(opens.map((o, i) => [o, Math.max(o, closes[i]) + 0.1, Math.min(o, closes[i]) - 0.1, closes[i]]));
-
-const MA_1_2: Strategy = { type: "ma-cross", fast: 1, slow: 2 }; // fast = the close itself, slow = 2-bar mean
-
-const cfg = (
-  strategy: Strategy,
-  stopLossPct: number | null = null,
-  takeProfitPct: number | null = null,
-  sameCandle: SameCandleRule = "stop-first",
-): BacktestConfig => ({ strategy, stopLossPct, takeProfitPct, sameCandle });
+import { MA_1_2, bars, cfg, date, fromOC, near } from "./helpers";
 
 // ---------------------------------------------------------------------------------------------
 // Timing: signal on one bar, fill on the next. Opens differ from closes so a fill at the wrong
@@ -117,9 +94,9 @@ describe("crossover boundaries", () => {
 // ---------------------------------------------------------------------------------------------
 // RSI(2), oversold 30, overbought 70, hand-calculated:
 //   close  10  11  12   11   10   9     10    12     12
-//   RSI    -   -   100  50   25   12.5  56.25 85.45  ...
+//   RSI    -   -   100  50   25   12.5  56.25 85.42  ...
 // Entry when RSI falls THROUGH 30: 50 -> 25 at i=4. i=5 (12.5) is already below, so no new cross.
-// Exit when RSI >= 70: first at i=7 (85.45).
+// Exit when RSI >= 70: first at i=7 (85.42).
 // ---------------------------------------------------------------------------------------------
 describe("RSI strategy", () => {
   const RSI: Strategy = { type: "rsi", period: 2, oversold: 30, overbought: 70 };
@@ -338,6 +315,7 @@ describe("equity curve", () => {
 
 describe("computeStats on hand-made trades", () => {
   const trade = (returnPct: number): Trade => ({
+    direction: "long",
     entryIndex: 0,
     exitIndex: 1,
     entryDate: date(0),
