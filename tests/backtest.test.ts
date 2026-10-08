@@ -4,6 +4,7 @@ import {
   INITIAL_CAPITAL,
   computeStats,
   runBacktest,
+  stopHitFirst,
   validateConfig,
   type BacktestConfig,
   type SameCandleRule,
@@ -257,6 +258,45 @@ describe("stop loss and take profit", () => {
       assert.equal(t.exitPrice, 8.5);
       assert.equal(t.ambiguous, false);
     });
+  });
+});
+
+describe("stopHitFirst: same-candle order depends on trade direction", () => {
+  const green = { open: 10, close: 11 }; // read as open -> low -> high -> close
+  const red = { open: 10, close: 9 }; // read as open -> high -> low -> close
+  const doji = { open: 10, close: 10 };
+
+  it("long: the low is the stop, so a green candle hits the stop first and a red one the target", () => {
+    assert.equal(stopHitFirst("by-candle-colour", "long", green), true);
+    assert.equal(stopHitFirst("by-candle-colour", "long", red), false);
+  });
+
+  it("short: the low is the target, so a green candle hits the target first and a red one the stop", () => {
+    assert.equal(stopHitFirst("by-candle-colour", "short", green), false);
+    assert.equal(stopHitFirst("by-candle-colour", "short", red), true);
+  });
+
+  it("the colour rule is exactly mirrored between long and short for every candle", () => {
+    for (const candle of [green, red, doji]) {
+      assert.notEqual(
+        stopHitFirst("by-candle-colour", "long", candle),
+        stopHitFirst("by-candle-colour", "short", candle),
+      );
+    }
+  });
+
+  it("a doji counts as green, consistently for both directions", () => {
+    assert.equal(stopHitFirst("by-candle-colour", "long", doji), true);
+    assert.equal(stopHitFirst("by-candle-colour", "short", doji), false);
+  });
+
+  it("stop-first and target-first ignore both colour and direction", () => {
+    for (const direction of ["long", "short"] as const) {
+      for (const candle of [green, red]) {
+        assert.equal(stopHitFirst("stop-first", direction, candle), true);
+        assert.equal(stopHitFirst("target-first", direction, candle), false);
+      }
+    }
   });
 });
 

@@ -8,6 +8,26 @@ export type Strategy =
 /** Which level a candle that touches both stop and target is assumed to have hit first. */
 export type SameCandleRule = "stop-first" | "target-first" | "by-candle-colour";
 
+export type Direction = "long" | "short";
+
+/**
+ * For a candle that opens between the stop and the target and then reaches both: was the
+ * stop hit first? A daily candle doesn't record the order, so "by-candle-colour" guesses from
+ * its shape: green is read as open -> low -> high -> close, red as open -> high -> low -> close.
+ * Which level the low or high reaches depends on direction: a long's stop is below and its
+ * target above, a short's the reverse.
+ */
+export function stopHitFirst(
+  rule: SameCandleRule,
+  direction: Direction,
+  candle: { open: number; close: number },
+): boolean {
+  if (rule === "stop-first") return true;
+  if (rule === "target-first") return false;
+  const lowFirst = candle.close >= candle.open;
+  return direction === "long" ? lowFirst : !lowFirst;
+}
+
 export type BacktestConfig = {
   strategy: Strategy;
   /** Percent below entry price, e.g. 5 = 5%. Null disables the stop. */
@@ -63,6 +83,9 @@ export type BacktestResult = {
 };
 
 export const INITIAL_CAPITAL = 10_000;
+
+/** The engine only goes long for now; stopHitFirst already handles shorts for when it doesn't. */
+const DIRECTION: Direction = "long";
 
 /** Returns an error message, or null when the config is runnable. */
 export function validateConfig(cfg: BacktestConfig): string | null {
@@ -167,9 +190,7 @@ export function runBacktest(candles: Candle[], cfg: BacktestConfig): BacktestRes
           else if (c.open >= target!) stopFirst = false;
           else {
             ambiguous = true;
-            // Bullish candle: assume it dipped before it rallied; bearish: the reverse.
-            stopFirst =
-              cfg.sameCandle === "stop-first" || (cfg.sameCandle === "by-candle-colour" && c.close >= c.open);
+            stopFirst = stopHitFirst(cfg.sameCandle, DIRECTION, c);
           }
         }
         if (stopFirst) close(i, Math.min(c.open, stop!), "stop-loss", ambiguous);
