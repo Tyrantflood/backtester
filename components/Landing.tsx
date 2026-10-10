@@ -76,9 +76,13 @@ export function DataHelp() {
 2024-01-03,100.95,102.47,100.57,102.22,1336199`}
         </pre>
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Get data by exporting a chart from TradingView (chart menu, Export chart data), or from
-          Yahoo Finance (a symbol&apos;s Historical Data tab, then Download). Rename the columns to the
-          names above if they differ, and use YYYY-MM-DD dates.
+          Free: Stooq. Search a symbol on stooq.com (US stocks end in .us, e.g. aapl.us), open its
+          Historical data page and use the CSV download link at the bottom.
+        </p>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          Also: TradingView (chart menu, Export chart data) and Yahoo Finance (a symbol&apos;s
+          Historical Data tab, then Download). Both may need a paid plan for exports. Rename the
+          columns to the names above if they differ, and use YYYY-MM-DD dates.
         </p>
         <a
           href="/sample-candles.csv"
