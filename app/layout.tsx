@@ -12,9 +12,21 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const title = "Backtester: test trading strategies on your own data";
+const description =
+  "Load candles from a CSV or a chart image, run a moving average or RSI strategy with stops and trading costs, and see the trades, stats and equity curve. Runs in your browser; nothing is uploaded.";
+
 export const metadata: Metadata = {
-  title: "Backtester",
-  description: "Backtest strategies on your own candle data",
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_SITE_URL ??
+      (process.env.VERCEL_PROJECT_PRODUCTION_URL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+        : "http://localhost:3000"),
+  ),
+  title,
+  description,
+  openGraph: { title, description, type: "website", siteName: "Backtester" },
+  twitter: { card: "summary_large_image", title, description },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

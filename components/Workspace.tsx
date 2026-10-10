@@ -6,13 +6,23 @@ import CandleChart, { MAX_MARKED_TRADES } from "@/components/CandleChart";
 import CsvUpload from "@/components/CsvUpload";
 import EquityChart from "@/components/EquityChart";
 import ImageUpload from "@/components/ImageUpload";
+import { DataHelp, Hero } from "@/components/Landing";
 import StrategyPanel from "@/components/StrategyPanel";
-import { runBacktest, type BacktestResult } from "@/lib/backtest";
-import type { Candle } from "@/lib/parseCandles";
+import { runBacktest, type BacktestConfig, type BacktestResult } from "@/lib/backtest";
+import { parseCandlesCsv, type Candle } from "@/lib/parseCandles";
 
 const NO_TRADES: never[] = []; // stable identity so the chart isn't rebuilt on every render
 
 type Source = "csv" | "image";
+
+/** What "Try with sample data" runs; matches the strategy panel's defaults. */
+const SAMPLE_CONFIG: BacktestConfig = {
+  strategy: { type: "ma-cross", fast: 10, slow: 30 },
+  mode: "long",
+  stopLossPct: null,
+  takeProfitPct: null,
+  sameCandle: "stop-first",
+};
 
 export default function Workspace() {
   const [source, setSource] = useState<Source>("csv");
@@ -20,10 +30,36 @@ export default function Workspace() {
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [runs, setRuns] = useState(0); // keys the results so each run starts with its own table state
 
+  const [sampleState, setSampleState] = useState<{ loading: boolean; error: string | null }>({
+    loading: false,
+    error: null,
+  });
+  const [usingSample, setUsingSample] = useState(false);
+
   function load(c: Candle[]) {
     setCandles(c);
     setResult(null); // results belong to the previous data set
+    setUsingSample(false);
   }
+
+  async function loadSample() {
+    setSampleState({ loading: true, error: null });
+    try {
+      const res = await fetch("/sample-candles.csv");
+      if (!res.ok) throw new Error(String(res.status));
+      const parsed = parseCandlesCsv(await res.text());
+      if (!parsed.ok) throw new Error(parsed.fatal);
+      setCandles(parsed.candles);
+      setResult(runBacktest(parsed.candles, SAMPLE_CONFIG));
+      setRuns((n) => n + 1);
+      setUsingSample(true);
+      setSampleState({ loading: false, error: null });
+    } catch {
+      setSampleState({ loading: false, error: "Could not load the sample data. Try again." });
+    }
+  }
+
+  const empty = candles.length === 0;
 
   const tab = (value: Source, label: string) => (
     <button
@@ -45,6 +81,11 @@ export default function Workspace() {
 
   return (
     <>
+      {empty ? (
+        <Hero onSample={() => void loadSample()} loading={sampleState.loading} error={sampleState.error} />
+      ) : (
+        <h1 className="text-3xl font-semibold tracking-tight">Backtester</h1>
+      )}
       <div role="tablist" aria-label="Data source" className="flex gap-2">
         {tab("csv", "CSV file")}
         {tab("image", "PNG chart image")}
@@ -57,8 +98,16 @@ export default function Workspace() {
         <ImageUpload onLoad={load} />
       </div>
 
-      {candles.length > 0 && (
+      {empty && <DataHelp />}
+
+      {!empty && (
         <>
+          {usingSample && (
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              Showing the sample data with a 10/30 moving average crossover. Change the strategy below,
+              or load your own file above.
+            </p>
+          )}
           <section className="w-full space-y-2">
             <CandleChart candles={candles} trades={result?.trades ?? NO_TRADES} />
             <p className="text-xs text-zinc-500">
