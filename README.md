@@ -48,6 +48,15 @@ Choose **long**, **short** or **both**. In "both" mode each exit also opens the 
 
 Comparisons treat values within one part in 10^12 as equal, so a stop that is exactly a price to the cent, or two averages that are mathematically level, are not decided by floating-point rounding.
 
+## Testing
+
+`npm test` runs 357 tests with `node:test` (through `tsx`) in under a second. They cover the parser, indicators, backtest engine, costs, shorts, image reading and the chart's trade windowing.
+
+- **Hand-calculated cases.** Each rule has a small dataset whose trades, prices and returns were worked out by hand and are asserted exactly: crossovers, RSI levels, stops and targets, gaps, the three same-candle rules, costs, and short liquidation.
+- **Look-ahead and off-by-one checks.** Signals must fill at the next candle's open, never the same bar. One suite rewrites or deletes every later candle and asserts that no earlier trade or indicator value changes. Others pin the exact bar index of entries and exits and the first bar an SMA or RSI value appears.
+- **Property tests.** On deterministic random walks (320 candles, fixed seed) in long, short and both modes: trades never overlap, the accounting balances, and costs never improve a result. The trade windowing is compared against a brute-force filter, and the image reader against charts drawn from known candles.
+- **Bug injection.** To check that the tests can fail, nine faults were put into the engine and indicators one at a time, with the suite run after each and the change reverted. Every one was caught (the number of failing tests is in brackets): reading the exit signal from the same bar (45), filling an exit at the close instead of the next open (30), filling a gapped stop at the level instead of the open (3), inverting the cautious same-candle rule (4), flipping the candle-colour tie (1), removing the floating-point tolerance on comparisons (8), an SMA window one bar off (57), a wrong RSI smoothing divisor (2) and a wrong RSI seed index (4). This was a one-off manual run, not part of `npm test`.
+
 ## Performance
 
 Every pipeline stage is linear. On a production build, a 100,000-candle file parses and charts in about 3 s and a backtest of it (11,000 trades) renders in under 1 s. The trades table shows the latest 500 trades until you ask for all of them, and the chart draws arrows only for the trades in view (at most 1,000). CSV parsing runs on the main thread, so a file near the 20 MB limit can freeze the page for a second or two.
